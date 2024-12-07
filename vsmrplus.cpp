@@ -20,7 +20,7 @@
 namespace EuroScope = EuroScopePlugIn;
 
 #define PLUGIN_NAME    "vSMR+"
-#define PLUGIN_VERSION "0.1.0"
+#define PLUGIN_VERSION "0.2.0"
 #define PLUGIN_AUTHORS "Patrick Winters"
 #define PLUGIN_LICENSE "GNU GPLv3"
 
@@ -28,13 +28,17 @@ namespace EuroScope = EuroScopePlugIn;
 #define COLOUR_HOTSPOT 0x80, 0xd9, 0x46, 0xef
 #define COLOUR_STUP    0xff, 0x10, 0xb9, 0x81
 #define COLOUR_PUSH    0xff, 0x3b, 0x82, 0xf6
+#define COLOUR_WARN    0xff, 0xf9, 0x73, 0x16
 
 const int OBJECT_TYPE_HOTSPOT = 1;
+const int OBJECT_TYPE_DEHIGHLIGHT = 2;
 
 const int HOTSPOT_SIZE = 16;
 const int HOTSPOT_STROKE = 2;
 const int HIGHLIGHT_SIZE = 24;
 const int HIGHLIGHT_STROKE = 2;
+
+const double WARN_DIST = 0.1; // nmi
 
 struct Hotspot {
 	EuroScope::CPosition position;
@@ -61,7 +65,9 @@ class Plugin : public EuroScope::CPlugIn {
 
 private:
 	std::vector<Hotspot> hotspot;
+	std::unordered_map<std::string, const Hotspot *> hotspot_by_name;
 	std::vector<std::vector<EuroScope::CPosition>> closed;
+	std::unordered_set<std::string> dehighlight;
 
 public:
 	Plugin(void) : CPlugIn(
@@ -79,6 +85,7 @@ public:
 	Screen *OnRadarScreenCreated(const char *, bool, bool, bool, bool) override;
 	void OnAirportRunwayActivityChanged() override;
 	bool OnCompileCommand(const char *) override;
+	void OnTimer(int) override;
 
 private:
 	void init();
@@ -133,11 +140,14 @@ void Screen::OnRefresh(HDC hdc, int phase) {
 			ctx->FillPolygon(&closed_brush, points, poly.size());
 		}
 	} else if (phase == EuroScope::REFRESH_PHASE_BEFORE_TAGS) {
-		Color stup_colour(Color::MakeARGB(COLOUR_STUP));
-		Color push_colour(Color::MakeARGB(COLOUR_PUSH));
-
-		Pen stup_pen(stup_colour, HIGHLIGHT_STROKE);
-		Pen push_pen(push_colour, HIGHLIGHT_STROKE);
+		Color
+			stup_colour(Color::MakeARGB(COLOUR_STUP)),
+			push_colour(Color::MakeARGB(COLOUR_PUSH)),
+			warn_colour(Color::MakeARGB(COLOUR_WARN));
+		Pen
+			stup_pen(stup_colour, HIGHLIGHT_STROKE),
+			push_pen(push_colour, HIGHLIGHT_STROKE),
+			warn_pen(warn_colour, HIGHLIGHT_STROKE);
 
 		for (const auto &hotspot : plugin->hotspot) {
 			POINT centre = ConvertCoordFromPositionToPixel(hotspot.position);
@@ -160,22 +170,48 @@ void Screen::OnRefresh(HDC hdc, int phase) {
 			fp = plugin->FlightPlanSelectNext(fp)
 		) {
 			const char *gs = fp.GetGroundState();
-			if (std::strcmp(gs, "STUP") && std::strcmp(gs, "PUSH")) continue;
+			Pen *pen;
+
+			if (!std::strcmp(gs, "STUP") || !std::strcmp(gs, "PUSH")) {
+				pen = gs[0] == 'P' ? &push_pen : &stup_pen;
+			} else if (!std::strcmp(gs, "TAXI")) {
+				if (plugin->dehighlight.contains(fp.GetCallsign())) continue;
+
+				auto spad = fp.GetControllerAssignedData().GetScratchPadString();
+				auto iter = plugin->hotspot_by_name.find(spad);
+				if (iter == plugin->hotspot_by_name.cend()) continue;
+
+				auto posn = fp.GetFPTrackPosition().GetPosition();
+				if (std::get<1>(*iter)->position.DistanceTo(posn) > WARN_DIST) continue;
+
+				auto half = HIGHLIGHT_SIZE / 2;
+				POINT c = ConvertCoordFromPositionToPixel(fp.GetFPTrackPosition().GetPosition());
+				RECT area = { c.x - half, c.y - half, c.x + half, c.y + half };
+				AddScreenObject(OBJECT_TYPE_DEHIGHLIGHT, fp.GetCallsign(), area, false, "Dehighlight");
+
+				pen = &warn_pen;
+			} else {
+				continue;
+			}
 
 			POINT centre = ConvertCoordFromPositionToPixel(fp.GetFPTrackPosition().GetPosition());
 			POINT point = { centre.x - HIGHLIGHT_SIZE / 2, centre.y - HIGHLIGHT_SIZE / 2 };
 			Rect rect(point.x, point.y, HIGHLIGHT_SIZE, HIGHLIGHT_SIZE);
-			ctx->DrawEllipse(gs[0] == 'P' ? &push_pen : &stup_pen, rect);
+			ctx->DrawEllipse(pen, rect);
 		}
 	}
 }
 
 void Screen::OnClickScreenObject(int type, const char *id, POINT, RECT, int button) {
-	if (type == OBJECT_TYPE_HOTSPOT && button == EuroScope::BUTTON_RIGHT) {
-		auto fpl = plugin->FlightPlanSelectASEL();
-		if (fpl.IsValid()) {
-			fpl.GetControllerAssignedData().SetScratchPadString("TAXI");
-			fpl.GetControllerAssignedData().SetScratchPadString(id);
+	if (button == EuroScope::BUTTON_RIGHT) {
+		if (type == OBJECT_TYPE_HOTSPOT) {
+			auto fpl = plugin->FlightPlanSelectASEL();
+			if (fpl.IsValid()) {
+				fpl.GetControllerAssignedData().SetScratchPadString("TAXI");
+				fpl.GetControllerAssignedData().SetScratchPadString(id);
+			}
+		} else if (type == OBJECT_TYPE_DEHIGHLIGHT) {
+			plugin->dehighlight.insert(id);
 		}
 	}
 }
@@ -195,6 +231,13 @@ bool Plugin::OnCompileCommand(const char *cmd) {
 	}
 
 	return false;
+}
+
+void Plugin::OnTimer(int) {
+	std::erase_if(dehighlight, [this](const auto &callsign) {
+		auto fp = FlightPlanSelect(callsign.c_str());
+		return !fp.IsValid() || std::strcmp(fp.GetGroundState(), "TAXI");
+	});
 }
 
 void Plugin::init() {
@@ -237,6 +280,7 @@ void Plugin::load() {
 	}
 
 	hotspot.clear();
+	hotspot_by_name.clear();
 	closed.clear();
 
 	std::unordered_map<std::string, Hotspot> named_hotspot;
@@ -340,5 +384,9 @@ void Plugin::load() {
 
 			hotspot.push_back(std::move(nh));
 		}
+	}
+
+	for (const auto &hotspot : hotspot) {
+		hotspot_by_name[hotspot.value] = &hotspot;
 	}
 }
