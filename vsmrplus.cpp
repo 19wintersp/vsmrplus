@@ -20,7 +20,7 @@
 namespace EuroScope = EuroScopePlugIn;
 
 #define PLUGIN_NAME    "vSMR+"
-#define PLUGIN_VERSION "0.2.0"
+#define PLUGIN_VERSION "0.2.1"
 #define PLUGIN_AUTHORS "Patrick Winters"
 #define PLUGIN_LICENSE "GNU GPLv3"
 
@@ -386,7 +386,10 @@ void Plugin::load() {
 		}
 	}
 
-	for (const auto &hotspot : hotspot) {
-		hotspot_by_name[hotspot.value] = &hotspot;
-	}
+	EuroScope::CPosition centre = ControllerMyself().GetPosition();
+	double range = ControllerMyself().GetRange();
+
+	for (const auto &hotspot : hotspot)
+		if (hotspot.position.DistanceTo(centre) < range)
+			hotspot_by_name[hotspot.value] = &hotspot;
 }
