@@ -20,9 +20,11 @@
 namespace EuroScope = EuroScopePlugIn;
 
 #define PLUGIN_NAME    "vSMR+"
-#define PLUGIN_VERSION "0.2.1"
+#define PLUGIN_VERSION "0.2.2"
 #define PLUGIN_AUTHORS "Patrick Winters"
 #define PLUGIN_LICENSE "GNU GPLv3"
+
+#define ASR_TYPE "SMR radar display"
 
 #define COLOUR_CLOSED  0xff, 0x96, 0x00, 0x00
 #define COLOUR_HOTSPOT 0x80, 0xd9, 0x46, 0xef
@@ -55,7 +57,7 @@ private:
 public:
 	Screen(Plugin *p) : plugin(p) {}
 
-	void OnAsrContentToBeClosed(void) override {}
+	void OnAsrContentToBeClosed(void) override;
 	void OnRefresh(HDC, int) override;
 	void OnClickScreenObject(int, const char *, POINT, RECT, int) override;
 };
@@ -101,6 +103,10 @@ void __declspec(dllexport) EuroScopePlugInInit(EuroScope::CPlugIn **ptr) {
 
 void __declspec(dllexport) EuroScopePlugInExit(void) {
 	if (instance) delete instance;
+}
+
+void Screen::OnAsrContentToBeClosed() {
+	delete this;
 }
 
 void Screen::OnRefresh(HDC hdc, int phase) {
@@ -216,8 +222,8 @@ void Screen::OnClickScreenObject(int type, const char *id, POINT, RECT, int butt
 	}
 }
 
-Screen *Plugin::OnRadarScreenCreated(const char *, bool, bool, bool geo, bool) {
-	return geo ? new Screen(this) : nullptr; // leak
+Screen *Plugin::OnRadarScreenCreated(const char *name, bool, bool, bool geo, bool) {
+	return geo && !std::strcmp(name, ASR_TYPE) ? new Screen(this) : nullptr;
 }
 
 void Plugin::OnAirportRunwayActivityChanged() {
