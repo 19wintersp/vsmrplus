@@ -20,7 +20,7 @@
 namespace EuroScope = EuroScopePlugIn;
 
 #define PLUGIN_NAME    "vSMR+"
-#define PLUGIN_VERSION "0.3.0"
+#define PLUGIN_VERSION "0.3.1"
 #define PLUGIN_AUTHORS "Patrick Winters"
 #define PLUGIN_LICENSE "GNU GPLv3"
 
@@ -46,6 +46,9 @@ const COLORREF COLOUR_STAND[] = {
 const int TAG_ITEM_STAND = 101;
 const int TAG_FUNC_STAND = 201;
 
+const int TAG_ITEM_DEHIGHLIGHT = 102;
+const int TAG_FUNC_DEHIGHLIGHT = 202;
+
 const int OBJECT_TYPE_HOTSPOT = 1;
 const int OBJECT_TYPE_DEHIGHLIGHT = 2;
 
@@ -53,6 +56,9 @@ const int HOTSPOT_SIZE = 16;
 const int HOTSPOT_STROKE = 2;
 const int HIGHLIGHT_SIZE = 24;
 const int HIGHLIGHT_STROKE = 2;
+
+const char CHAR_BOX_FILLED = '\xa4';
+const char CHAR_BOX_EMPTY  = '\xac';
 
 const double WARN_DIST = 0.1; // nmi
 
@@ -214,10 +220,10 @@ void Screen::OnRefresh(HDC hdc, int phase) {
 				auto posn = fp.GetFPTrackPosition().GetPosition();
 				if (std::get<1>(*iter)->position.DistanceTo(posn) > WARN_DIST) continue;
 
-				auto half = HIGHLIGHT_SIZE / 2;
+				/* auto half = HIGHLIGHT_SIZE / 2;
 				POINT c = ConvertCoordFromPositionToPixel(fp.GetFPTrackPosition().GetPosition());
 				RECT area = { c.x - half, c.y - half, c.x + half, c.y + half };
-				AddScreenObject(OBJECT_TYPE_DEHIGHLIGHT, fp.GetCallsign(), area, false, "Dehighlight");
+				AddScreenObject(OBJECT_TYPE_DEHIGHLIGHT, fp.GetCallsign(), area, false, "Dehighlight"); */
 
 				pen = &warn_pen;
 			} else {
@@ -264,48 +270,63 @@ bool Plugin::OnCompileCommand(const char *cmd) {
 }
 
 void Plugin::OnFunctionCall(int code, const char *, POINT, RECT) {
-	if (code != TAG_FUNC_STAND) return;
-
 	auto fp = FlightPlanSelectASEL();
 	if (!fp.IsValid()) return;
 
-	auto it1 = stands.find(fp.GetFlightPlanData().GetOrigin());
-	if (it1 == stands.cend()) return;
+	if (code == TAG_FUNC_STAND) {
+		auto it1 = stands.find(fp.GetFlightPlanData().GetOrigin());
+		if (it1 == stands.cend()) return;
 
-	auto std = fp.GetControllerAssignedData().GetFlightStripAnnotation(3);
-	auto it2 = std::get<1>(*it1).find(std);
-	if (it2 == std::get<1>(*it1).cend()) return;
+		auto std = fp.GetControllerAssignedData().GetFlightStripAnnotation(3);
+		auto it2 = std::get<1>(*it1).find(std);
+		if (it2 == std::get<1>(*it1).cend()) return;
 
-	const std::string &details = std::get<1>(*it2).details;
-	if (details.empty()) return;
+		const std::string &details = std::get<1>(*it2).details;
+		if (details.empty()) return;
 
-	DisplayUserMessage(PLUGIN_NAME, std, details.c_str(), true, true, false, false, false);
+		DisplayUserMessage(PLUGIN_NAME, std, details.c_str(), true, true, false, false, false);
+	} else if (code == TAG_FUNC_DEHIGHLIGHT) {
+		auto cs = fp.GetCallsign();
+
+		if (dehighlight.contains(cs))
+			dehighlight.erase(cs);
+		else if (!std::strcmp(fp.GetGroundState(), "TAXI"))
+			dehighlight.insert(cs);
+	}
 }
 
 void Plugin::OnGetTagItem(EuroScope::CFlightPlan fp, EuroScope::CRadarTarget, int code, int, char string[16], int *colour, COLORREF *rgb, double *) {
-	if (code != TAG_ITEM_STAND) return;
 	if (!fp.IsValid()) return;
 
-	string[0] = 0;
+	if (code == TAG_ITEM_STAND) {
+		string[0] = 0;
 
-	if (fp.GetDistanceFromOrigin() > 10.0) return;
+		if (fp.GetDistanceFromOrigin() > 10.0) return;
 
-	auto it1 = stands.find(fp.GetFlightPlanData().GetOrigin());
-	if (it1 == stands.cend()) return;
+		auto it1 = stands.find(fp.GetFlightPlanData().GetOrigin());
+		if (it1 == stands.cend()) return;
 
-	auto it2 = std::get<1>(*it1).find(fp.GetControllerAssignedData().GetFlightStripAnnotation(3));
-	if (it2 == std::get<1>(*it1).cend()) return;
+		auto it2 = std::get<1>(*it1).find(fp.GetControllerAssignedData().GetFlightStripAnnotation(3));
+		if (it2 == std::get<1>(*it1).cend()) return;
 
-	auto stand = std::get<1>(*it2);
+		auto stand = std::get<1>(*it2);
 
-	char engine_type = fp.GetFlightPlanData().GetEngineType();
-	bool prop = engine_type == 'P' || engine_type == 'T';
+		char engine_type = fp.GetFlightPlanData().GetEngineType();
+		bool prop = engine_type == 'P' || engine_type == 'T';
 
-	string[0] = prop ? stand.prop_letter : stand.letter;
-	string[1] = 0;
+		string[0] = prop ? stand.prop_letter : stand.letter;
+		string[1] = 0;
 
-	*colour = EuroScope::TAG_COLOR_RGB_DEFINED;
-	*rgb = COLOUR_STAND[prop ? stand.prop_colour : stand.colour];
+		*colour = EuroScope::TAG_COLOR_RGB_DEFINED;
+		*rgb = COLOUR_STAND[prop ? stand.prop_colour : stand.colour];
+	} else if (code == TAG_ITEM_DEHIGHLIGHT) {
+		bool dehighlighted = dehighlight.contains(fp.GetCallsign());
+
+		string[0] = dehighlighted ? CHAR_BOX_FILLED : CHAR_BOX_EMPTY;
+		string[1] = 0;
+
+		*colour = EuroScope::TAG_COLOR_DEFAULT;
+	}
 }
 
 void Plugin::OnTimer(int) {
@@ -318,6 +339,9 @@ void Plugin::OnTimer(int) {
 void Plugin::init() {
 	RegisterTagItemType("Stand information", TAG_ITEM_STAND);
 	RegisterTagItemFunction("Show detailed stand information", TAG_FUNC_STAND);
+
+	RegisterTagItemType("Handoff indicator", TAG_ITEM_DEHIGHLIGHT);
+	RegisterTagItemFunction("Toggle handoff indicator", TAG_FUNC_DEHIGHLIGHT);
 
 	load();
 }
