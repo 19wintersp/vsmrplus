@@ -20,7 +20,7 @@
 namespace EuroScope = EuroScopePlugIn;
 
 #define PLUGIN_NAME    "vSMR+"
-#define PLUGIN_VERSION "0.2.2"
+#define PLUGIN_VERSION "0.3.0"
 #define PLUGIN_AUTHORS "Patrick Winters"
 #define PLUGIN_LICENSE "GNU GPLv3"
 
@@ -31,6 +31,20 @@ namespace EuroScope = EuroScopePlugIn;
 #define COLOUR_STUP    0xff, 0x10, 0xb9, 0x81
 #define COLOUR_PUSH    0xff, 0x3b, 0x82, 0xf6
 #define COLOUR_WARN    0xff, 0xf9, 0x73, 0x16
+
+const COLORREF COLOUR_STAND[] = {
+	RGB(0x66, 0x66, 0x66),
+	RGB(0xcd, 0x31, 0x31),
+	RGB(0x0d, 0xbc, 0x79),
+	RGB(0xe5, 0xe5, 0x10),
+	RGB(0x24, 0x72, 0xc8),
+	RGB(0xbc, 0x3f, 0xbc),
+	RGB(0x11, 0xa8, 0xcd),
+	RGB(0xe5, 0xe5, 0xe5)
+};
+
+const int TAG_ITEM_STAND = 101;
+const int TAG_FUNC_STAND = 201;
 
 const int OBJECT_TYPE_HOTSPOT = 1;
 const int OBJECT_TYPE_DEHIGHLIGHT = 2;
@@ -46,6 +60,12 @@ struct Hotspot {
 	EuroScope::CPosition position;
 	std::string value;
 	std::uint32_t colour;
+};
+
+struct StandInfo {
+	char letter;
+	size_t colour : 8;
+	std::string details;
 };
 
 class Plugin;
@@ -71,6 +91,8 @@ private:
 	std::vector<std::vector<EuroScope::CPosition>> closed;
 	std::unordered_set<std::string> dehighlight;
 
+	std::unordered_map<std::string, std::unordered_map<std::string, StandInfo>> stands;
+
 public:
 	Plugin(void) : CPlugIn(
 		EuroScope::COMPATIBILITY_CODE,
@@ -87,6 +109,8 @@ public:
 	Screen *OnRadarScreenCreated(const char *, bool, bool, bool, bool) override;
 	void OnAirportRunwayActivityChanged() override;
 	bool OnCompileCommand(const char *) override;
+	void OnFunctionCall(int, const char *, POINT, RECT) override;
+	void OnGetTagItem(EuroScope::CFlightPlan, EuroScope::CRadarTarget, int, int, char[16], int *, COLORREF *, double *) override;
 	void OnTimer(int) override;
 
 private:
@@ -239,6 +263,48 @@ bool Plugin::OnCompileCommand(const char *cmd) {
 	return false;
 }
 
+void Plugin::OnFunctionCall(int code, const char *, POINT, RECT) {
+	if (code != TAG_FUNC_STAND) return;
+
+	auto fp = FlightPlanSelectASEL();
+	if (!fp.IsValid()) return;
+
+	auto it1 = stands.find(fp.GetFlightPlanData().GetOrigin());
+	if (it1 == stands.cend()) return;
+
+	auto std = fp.GetControllerAssignedData().GetFlightStripAnnotation(3);
+	auto it2 = std::get<1>(*it1).find(std);
+	if (it2 == std::get<1>(*it1).cend()) return;
+
+	const std::string &details = std::get<1>(*it2).details;
+	if (details.empty()) return;
+
+	DisplayUserMessage(PLUGIN_NAME, std, details.c_str(), true, true, false, false, false);
+}
+
+void Plugin::OnGetTagItem(EuroScope::CFlightPlan fp, EuroScope::CRadarTarget, int code, int, char string[16], int *colour, COLORREF *rgb, double *) {
+	if (code != TAG_ITEM_STAND) return;
+	if (!fp.IsValid()) return;
+
+	string[0] = 0;
+
+	if (fp.GetDistanceFromOrigin() > 10.0) return;
+
+	auto it1 = stands.find(fp.GetFlightPlanData().GetOrigin());
+	if (it1 == stands.cend()) return;
+
+	auto it2 = std::get<1>(*it1).find(fp.GetControllerAssignedData().GetFlightStripAnnotation(3));
+	if (it2 == std::get<1>(*it1).cend()) return;
+
+	auto stand = std::get<1>(*it2);
+
+	string[0] = stand.letter;
+	string[1] = 0;
+
+	*colour = EuroScope::TAG_COLOR_RGB_DEFINED;
+	*rgb = COLOUR_STAND[stand.colour];
+}
+
 void Plugin::OnTimer(int) {
 	std::erase_if(dehighlight, [this](const auto &callsign) {
 		auto fp = FlightPlanSelect(callsign.c_str());
@@ -247,6 +313,9 @@ void Plugin::OnTimer(int) {
 }
 
 void Plugin::init() {
+	RegisterTagItemType("Stand information", TAG_ITEM_STAND);
+	RegisterTagItemFunction("Show detailed stand information", TAG_FUNC_STAND);
+
 	load();
 }
 
@@ -288,6 +357,7 @@ void Plugin::load() {
 	hotspot.clear();
 	hotspot_by_name.clear();
 	closed.clear();
+	stands.clear();
 
 	std::unordered_map<std::string, Hotspot> named_hotspot;
 
@@ -305,6 +375,8 @@ void Plugin::load() {
 	bool active = true;
 	std::uint32_t colour = 0;
 
+	decltype(stands)::mapped_type *current_stands;
+
 	while (std::getline(is, line)) {
 		if (line.empty() || line[0] == ';') continue;
 
@@ -319,6 +391,7 @@ void Plugin::load() {
 			if (parts.size() != 2) goto fail;
 
 			active = active_aerodromes.find(parts[1]) != active_aerodromes.end();
+			current_stands = &stands[parts[1]];
 
 			break;
 
@@ -361,6 +434,28 @@ void Plugin::load() {
 			if (!pos.LoadFromStrings(lon, lat)) goto fail;
 
 			hotspot.push_back({ pos, std::move(parts[1]), colour });
+
+			break;
+		}
+
+		case 'S': {
+			if (!active || parts.size() < 3) goto fail;
+
+			StandInfo stand;
+			stand.letter = parts[2][0];
+			stand.colour = parts.size() < 4 ? 0 : parts[3][0] - '0';
+
+			if (parts.size() > 4) {
+				size_t offset = 0;
+				for (int i = 0; i < 4; i++) {
+					offset = line.find_first_of("\t ", offset);
+					offset = line.find_first_not_of("\t ", offset);
+				}
+
+				stand.details = std::string(line.c_str() + offset);
+			}
+
+			current_stands->insert({ parts[1], std::move(stand) });
 
 			break;
 		}
