@@ -63,8 +63,8 @@ struct Hotspot {
 };
 
 struct StandInfo {
-	char letter;
-	size_t colour : 8;
+	char letter, prop_letter;
+	size_t colour : 8, prop_colour : 8;
 	std::string details;
 };
 
@@ -298,11 +298,14 @@ void Plugin::OnGetTagItem(EuroScope::CFlightPlan fp, EuroScope::CRadarTarget, in
 
 	auto stand = std::get<1>(*it2);
 
-	string[0] = stand.letter;
+	char engine_type = fp.GetFlightPlanData().GetEngineType();
+	bool prop = engine_type == 'P' || engine_type == 'T';
+
+	string[0] = prop ? stand.prop_letter : stand.letter;
 	string[1] = 0;
 
 	*colour = EuroScope::TAG_COLOR_RGB_DEFINED;
-	*rgb = COLOUR_STAND[stand.colour];
+	*rgb = COLOUR_STAND[prop ? stand.prop_colour : stand.colour];
 }
 
 void Plugin::OnTimer(int) {
@@ -438,12 +441,24 @@ void Plugin::load() {
 			break;
 		}
 
+		case 'P': {
+			if (parts.size() < 3 || parts.size() > 4) goto fail;
+			if (!active) continue;
+
+			auto &stand = current_stands->at(parts[1]);
+			stand.prop_letter = parts[2][0];
+			stand.prop_colour = parts.size() < 4 ? 0 : parts[3][0] - '0';
+
+			break;
+		}
+
 		case 'S': {
-			if (!active || parts.size() < 3) goto fail;
+			if (parts.size() < 3) goto fail;
+			if (!active) continue;
 
 			StandInfo stand;
-			stand.letter = parts[2][0];
-			stand.colour = parts.size() < 4 ? 0 : parts[3][0] - '0';
+			stand.letter = stand.prop_letter = parts[2][0];
+			stand.colour = stand.prop_colour = parts.size() < 4 ? 0 : parts[3][0] - '0';
 
 			if (parts.size() > 4) {
 				size_t offset = 0;
