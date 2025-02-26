@@ -1,9 +1,11 @@
+#include <cmath>
 #include <cstdint>
 #include <cstring>
 
 #include <fstream>
-#include <memory>
 #include <iterator>
+#include <memory>
+#include <numbers>
 #include <sstream>
 #include <string>
 #include <unordered_map>
@@ -20,7 +22,7 @@
 namespace EuroScope = EuroScopePlugIn;
 
 #define PLUGIN_NAME    "vSMR+"
-#define PLUGIN_VERSION "0.3.2"
+#define PLUGIN_VERSION "0.3.3"
 #define PLUGIN_AUTHORS "Patrick Winters"
 #define PLUGIN_LICENSE "GNU GPLv3"
 
@@ -31,6 +33,11 @@ namespace EuroScope = EuroScopePlugIn;
 #define COLOUR_STUP    0xff, 0x10, 0xb9, 0x81
 #define COLOUR_PUSH    0xff, 0x3b, 0x82, 0xf6
 #define COLOUR_WARN    0xff, 0xf9, 0x73, 0x16
+#define COLOUR_ROSE_BG 0xff, 0xa3, 0xa3, 0xa3
+#define COLOUR_ARMS_L  0xff, 0x52, 0x52, 0x52
+#define COLOUR_ARMS_R  0xff, 0x73, 0x73, 0x73
+#define COLOUR_NORTH_L 0xff, 0xdc, 0x26, 0x26
+#define COLOUR_NORTH_R 0xff, 0xef, 0x44, 0x44
 
 const COLORREF COLOUR_STAND[] = {
 	RGB(0x66, 0x66, 0x66),
@@ -60,6 +67,11 @@ const int HOTSPOT_SIZE = 16;
 const int HOTSPOT_STROKE = 2;
 const int HIGHLIGHT_SIZE = 24;
 const int HIGHLIGHT_STROKE = 2;
+
+const float ROSE_BORDER_WIDTH = 1;
+const float ROSE_INNER_RADIUS = 6;
+const float ROSE_ARM_RADIUS   = 20;
+const float ROSE_NORTH_RADIUS = 32;
 
 const char CHAR_BOX_FILLED = '\xa4';
 const char CHAR_BOX_EMPTY  = '\xac';
@@ -242,7 +254,80 @@ void Screen::OnRefresh(HDC hdc, int phase) {
 			Rect rect(point.x, point.y, HIGHLIGHT_SIZE, HIGHLIGHT_SIZE);
 			ctx->DrawEllipse(pen, rect);
 		}
+
+		Color
+			rose_bg_colour(Color::MakeARGB(COLOUR_ROSE_BG)),
+			arms_l_colour(Color::MakeARGB(COLOUR_ARMS_L)),
+			arms_r_colour(Color::MakeARGB(COLOUR_ARMS_R)),
+			north_l_colour(Color::MakeARGB(COLOUR_NORTH_L)),
+			north_r_colour(Color::MakeARGB(COLOUR_NORTH_R));
+		SolidBrush
+			arms_l_brush(arms_l_colour),
+			arms_r_brush(arms_r_colour),
+			north_l_brush(north_l_colour),
+			north_r_brush(north_r_colour);
+		Pen rose_bg_pen(rose_bg_colour, 2 * ROSE_BORDER_WIDTH);
+
+		EuroScope::CPosition north, south;
+		PointF vector, origin, outer[4], inner[4], points[8];
+		float norm, r, k = std::numbers::sqrt2 * 0.5;
+
+		GetDisplayArea(&south, &north);
+		south.m_Longitude = north.m_Longitude;
+
+		auto north_point = ConvertCoordFromPositionToPixel(north);
+		auto south_point = ConvertCoordFromPositionToPixel(south);
+
+		auto area = GetRadarArea();
+		origin.X = area.left + 1.5 * ROSE_NORTH_RADIUS + 64;
+		origin.Y = area.bottom - 1.5 * ROSE_NORTH_RADIUS;
+
+		vector.X = north_point.x - south_point.x;
+		vector.Y = north_point.y - south_point.y;
+
+		norm = hypotf(vector.X, vector.Y);
+		vector.X /= norm;
+		vector.Y /= norm;
+
+		for (int i = 0; i < 8; i++) {
+			PointF *point = i % 2 ? &inner[i / 2] : &outer[i / 2];
+
+			point->X = vector.X;
+			point->Y = vector.Y;
+
+			vector.X -= point->Y;
+			vector.Y += point->X;
+
+			vector.X *= k;
+			vector.Y *= k;
+
+			r = i ? (i % 2 ? ROSE_INNER_RADIUS : ROSE_ARM_RADIUS) : ROSE_NORTH_RADIUS;
+			point->X *= r;
+			point->Y *= r;
+
+			point->X += origin.X;
+			point->Y += origin.Y;
+
+			points[i] = *point;
+		}
+
+		ctx->DrawPolygon(&rose_bg_pen, points, 8);
+
+		points[0] = origin;
+
+		for (int i = 0; i < 4; i++) {
+			points[1] = outer[i];
+			points[2] = inner[i];
+
+			ctx->FillPolygon(i ? &arms_r_brush : &north_r_brush, points, 3);
+
+			points[2] = inner[(i + 3) % 4];
+
+			ctx->FillPolygon(i ? &arms_l_brush : &north_l_brush, points, 3);
+		}
 	}
+
+	delete ctx;
 }
 
 void Screen::OnClickScreenObject(int type, const char *id, POINT, RECT, int button) {
