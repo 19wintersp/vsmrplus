@@ -20,7 +20,7 @@
 namespace EuroScope = EuroScopePlugIn;
 
 #define PLUGIN_NAME    "vSMR+"
-#define PLUGIN_VERSION "0.3.1"
+#define PLUGIN_VERSION "0.3.2"
 #define PLUGIN_AUTHORS "Patrick Winters"
 #define PLUGIN_LICENSE "GNU GPLv3"
 
@@ -48,6 +48,10 @@ const int TAG_FUNC_STAND = 201;
 
 const int TAG_ITEM_DEHIGHLIGHT = 102;
 const int TAG_FUNC_DEHIGHLIGHT = 202;
+
+const int TAG_ITEM_PRESSURE = 103;
+const int TAG_FUNC_PRESSURE_UPDATE = 203;
+const int TAG_FUNC_PRESSURE_RESET  = 204;
 
 const int OBJECT_TYPE_HOTSPOT = 1;
 const int OBJECT_TYPE_DEHIGHLIGHT = 2;
@@ -99,6 +103,8 @@ private:
 
 	std::unordered_map<std::string, std::unordered_map<std::string, StandInfo>> stands;
 
+	std::unordered_map<std::string, std::string> ac_pressure, ad_pressure;
+
 public:
 	Plugin(void) : CPlugIn(
 		EuroScope::COMPATIBILITY_CODE,
@@ -117,6 +123,7 @@ public:
 	bool OnCompileCommand(const char *) override;
 	void OnFunctionCall(int, const char *, POINT, RECT) override;
 	void OnGetTagItem(EuroScope::CFlightPlan, EuroScope::CRadarTarget, int, int, char[16], int *, COLORREF *, double *) override;
+	void OnNewMetarReceived(const char *, const char *) override;
 	void OnTimer(int) override;
 
 private:
@@ -273,60 +280,110 @@ void Plugin::OnFunctionCall(int code, const char *, POINT, RECT) {
 	auto fp = FlightPlanSelectASEL();
 	if (!fp.IsValid()) return;
 
-	if (code == TAG_FUNC_STAND) {
-		auto it1 = stands.find(fp.GetFlightPlanData().GetOrigin());
-		if (it1 == stands.cend()) return;
+	switch (code) {
+		case TAG_FUNC_STAND: {
+			auto it1 = stands.find(fp.GetFlightPlanData().GetOrigin());
+			if (it1 == stands.cend()) return;
 
-		auto std = fp.GetControllerAssignedData().GetFlightStripAnnotation(3);
-		auto it2 = std::get<1>(*it1).find(std);
-		if (it2 == std::get<1>(*it1).cend()) return;
+			auto std = fp.GetControllerAssignedData().GetFlightStripAnnotation(3);
+			auto it2 = std::get<1>(*it1).find(std);
+			if (it2 == std::get<1>(*it1).cend()) return;
 
-		const std::string &details = std::get<1>(*it2).details;
-		if (details.empty()) return;
+			const std::string &details = std::get<1>(*it2).details;
+			if (details.empty()) return;
 
-		DisplayUserMessage(PLUGIN_NAME, std, details.c_str(), true, true, false, false, false);
-	} else if (code == TAG_FUNC_DEHIGHLIGHT) {
-		auto cs = fp.GetCallsign();
+			DisplayUserMessage(PLUGIN_NAME, std, details.c_str(), true, true, false, false, false);
 
-		if (dehighlight.contains(cs))
-			dehighlight.erase(cs);
-		else if (!std::strcmp(fp.GetGroundState(), "TAXI"))
-			dehighlight.insert(cs);
+			break;
+		}
+
+		case TAG_FUNC_DEHIGHLIGHT: {
+			auto cs = fp.GetCallsign();
+
+			if (dehighlight.contains(cs))
+				dehighlight.erase(cs);
+			else if (!std::strcmp(fp.GetGroundState(), "TAXI"))
+				dehighlight.insert(cs);
+
+			break;
+		}
+
+		case TAG_FUNC_PRESSURE_UPDATE: {
+			auto it = ad_pressure.find(fp.GetFlightPlanData().GetOrigin());
+			if (it != ad_pressure.cend())
+				ac_pressure[std::string(fp.GetCallsign())] = std::get<1>(*it);
+
+			break;
+		}
+
+		case TAG_FUNC_PRESSURE_RESET:
+			ac_pressure.erase(fp.GetCallsign());
+			break;
 	}
 }
 
 void Plugin::OnGetTagItem(EuroScope::CFlightPlan fp, EuroScope::CRadarTarget, int code, int, char string[16], int *colour, COLORREF *rgb, double *) {
 	if (!fp.IsValid()) return;
 
-	if (code == TAG_ITEM_STAND) {
-		string[0] = 0;
+	switch (code) {
+		case TAG_ITEM_STAND: {
+			string[0] = 0;
 
-		if (fp.GetDistanceFromOrigin() > 10.0) return;
+			if (fp.GetDistanceFromOrigin() > 10.0) return;
 
-		auto it1 = stands.find(fp.GetFlightPlanData().GetOrigin());
-		if (it1 == stands.cend()) return;
+			auto it1 = stands.find(fp.GetFlightPlanData().GetOrigin());
+			if (it1 == stands.cend()) return;
 
-		auto it2 = std::get<1>(*it1).find(fp.GetControllerAssignedData().GetFlightStripAnnotation(3));
-		if (it2 == std::get<1>(*it1).cend()) return;
+			auto it2 = std::get<1>(*it1).find(fp.GetControllerAssignedData().GetFlightStripAnnotation(3));
+			if (it2 == std::get<1>(*it1).cend()) return;
 
-		auto stand = std::get<1>(*it2);
+			auto stand = std::get<1>(*it2);
 
-		char engine_type = fp.GetFlightPlanData().GetEngineType();
-		bool prop = engine_type == 'P' || engine_type == 'T';
+			char engine_type = fp.GetFlightPlanData().GetEngineType();
+			bool prop = engine_type == 'P' || engine_type == 'T';
 
-		string[0] = prop ? stand.prop_letter : stand.letter;
-		string[1] = 0;
+			string[0] = prop ? stand.prop_letter : stand.letter;
+			string[1] = 0;
 
-		*colour = EuroScope::TAG_COLOR_RGB_DEFINED;
-		*rgb = COLOUR_STAND[prop ? stand.prop_colour : stand.colour];
-	} else if (code == TAG_ITEM_DEHIGHLIGHT) {
-		bool dehighlighted = dehighlight.contains(fp.GetCallsign());
+			*colour = EuroScope::TAG_COLOR_RGB_DEFINED;
+			*rgb = COLOUR_STAND[prop ? stand.prop_colour : stand.colour];
 
-		string[0] = dehighlighted ? CHAR_BOX_FILLED : CHAR_BOX_EMPTY;
-		string[1] = 0;
+			break;
+		}
 
-		*colour = EuroScope::TAG_COLOR_DEFAULT;
+		case TAG_ITEM_DEHIGHLIGHT: {
+			bool dehighlighted = dehighlight.contains(fp.GetCallsign());
+
+			string[0] = dehighlighted ? CHAR_BOX_FILLED : CHAR_BOX_EMPTY;
+			string[1] = 0;
+
+			*colour = EuroScope::TAG_COLOR_DEFAULT;
+
+			break;
+		}
+
+		case TAG_ITEM_PRESSURE: {
+			string[0] = 0;
+
+			auto it1 = ac_pressure.find(fp.GetCallsign());
+			if (it1 == ac_pressure.cend()) return;
+
+			bool ok = false;
+			auto it2 = ad_pressure.find(fp.GetFlightPlanData().GetOrigin());
+			if (it2 != ad_pressure.cend()) ok = std::get<1>(*it1) == std::get<1>(*it2);
+
+			strncpy_s(string, 12, std::get<1>(*it1).c_str(), 2);
+
+			*colour = ok ? EuroScope::TAG_COLOR_REDUNDANT : EuroScope::TAG_COLOR_INFORMATION;
+
+			break;
+		}
 	}
+}
+
+void Plugin::OnNewMetarReceived(const char *ad, const char *metar) {
+	// selon Annex 4, il y a jamais un "Q" avant la pression
+	ad_pressure[ad] = std::string(std::strchr(metar, 'Q') + 3, 2);
 }
 
 void Plugin::OnTimer(int) {
@@ -342,6 +399,10 @@ void Plugin::init() {
 
 	RegisterTagItemType("Handoff indicator", TAG_ITEM_DEHIGHLIGHT);
 	RegisterTagItemFunction("Toggle handoff indicator", TAG_FUNC_DEHIGHLIGHT);
+
+	RegisterTagItemType("Pressure setting", TAG_ITEM_PRESSURE);
+	RegisterTagItemFunction("Update pressure setting", TAG_FUNC_PRESSURE_UPDATE);
+	RegisterTagItemFunction("Reset pressure setting", TAG_FUNC_PRESSURE_RESET);
 
 	load();
 }
